@@ -28,7 +28,7 @@ on:
         type: boolean
         default: 'true'
       kpm_enable:
-        description: '是否开启kpm(使用KpatchNext独立实现kpm(支持任意KSU/面具环境); 不需要可保持默认关闭)'
+        description: '是否开启kpm'
         required: true
         type: boolean
         default: 'false'
@@ -262,7 +262,7 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "resukisu" ]]; then
             echo "正在配置ReSukiSU（由于SukiSU长期未维护无法正常编译，且ReSukiSU兼容sukisu管理器，故SukiSU源码仓库已重定向为resukisu）..."
-            curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            curl -LSs "https://raw.githubusercontent.com/mikugirls/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
             echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%"' >> ./common/arch/arm64/configs/gki_defconfig
             cd ./KernelSU
             # 生成自定义版本号（基于提交计数）, 失败时使用 114514
@@ -391,7 +391,11 @@ jobs:
           # 6.12内核Rust配置
           echo "CONFIG_RUST=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ANDROID_BINDER_IPC_RUST=m" >> ./common/arch/arm64/configs/gki_defconfig
-          
+          # 如果启用了 KPM 且 KSU 类型为 SukiSU/ReSukiSU，添加 CONFIG_KPM=y
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "true" && ( "${{ github.event.inputs.ksu_type }}" == "resukisu" || "${{ github.event.inputs.ksu_type }}" == "sukisu" ) ]]; then
+            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+
       - name: 启用网络功能增强优化配置
         if: inputs.better_net
         run: |
@@ -714,10 +718,27 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ github.ref_name }}
          
-      - name: 应用KPM并修补内核
-        if: inputs.kpm_enable
+      # ---------- KPM 后处理分支（根据 ksu_type 选择） ----------
+      # 1. 当 ksu_type 为 resukisu 或 sukisu 时，使用 SukiSU 的 patch_linux 工具
+      - name: 应用 KPM 补丁（SukiSU 方式）
+        if: inputs.kpm_enable && (github.event.inputs.ksu_type == 'resukisu' || github.event.inputs.ksu_type == 'sukisu')
         run: |
-          echo "正在应用KP-N并修补内核..."
+          echo "正在应用 SukiSU KPM 补丁..."
+          cd kernel_workspace/common/out/arch/arm64/boot
+          # 下载 SukiSU 提供的 patch_linux 脚本
+          wget https://github.com/SukiSU-Ultra/SukiSU_patch/raw/refs/heads/main/kpm/patch_linux -O patch
+          chmod +x ./patch
+          # 执行修补
+          ./patch
+          rm -f Image
+          mv oImage Image
+          echo "SukiSU KPM 补丁应用完成。"
+
+      # 2. 当 ksu_type 为 ksunext 或 ksu 时，使用 KPatch-Next 的 kptools 工具（原 KPN 方式）
+      - name: 应用KPM并修补内核（KPN方式）
+        if: inputs.kpm_enable && (github.event.inputs.ksu_type == 'ksunext' || github.event.inputs.ksu_type == 'ksu')
+        run: |
+          echo "正在应用 KPatch-Next (KPN) 修补内核..."
           cd kernel_workspace/common/out/arch/arm64/boot
           wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kptools-linux
           wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kpimg-linux
@@ -725,7 +746,8 @@ jobs:
           ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
           rm -f Image
           mv oImage Image
-          
+          echo "KPN 补丁应用完成。"
+
       - name: 克隆 AnyKernel3 并打包
         id: create_zip
         run: |
@@ -752,7 +774,8 @@ jobs:
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
             wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
           fi
-          if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
+          # 仅在 KPN 模式下（ksunext 或 ksu）下载 kpn.zip，供用户使用
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "true" && ( "${{ github.event.inputs.ksu_type }}" == "ksunext" || "${{ github.event.inputs.ksu_type }}" == "ksu" ) ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
           fi
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
@@ -883,6 +906,7 @@ jobs:
           
           ### ⏫️ 更新内容：
           - 更新${{ env.KSU_TYPENAME }}至最新版本（${{ needs.build.outputs.ksuver }}）
+          - KPM 根据 KSU 分支自动选择 SukiSU 或 KPN 后处理方式
           - 默认开启Ntsync并修复权限
           - (预留)
           
@@ -892,7 +916,7 @@ jobs:
           3. 若你之前已刷入SukiSU Ultra内核，且SukiSU Ultra管理器已更新至最新版本，可在SukiSU Ultra管理器中直接刷入AnyKernel刷机包并重启；
           4. 刷入无lz4kd补丁版的内核前若刷入过lz4kd补丁版的内核，为避免出错，请先关闭zram模块；
           5. 由于KernelSU上游更新了元模块功能，最新版KSU管理器（包括除KernelSU Next以外的各分支）需要配合元模块(metamodule)才能正常挂载模块。目前的元模块包括[meta overlayfs](https://github.com/KernelSU-Modules-Repo/meta-overlayfs), [mountify](https://github.com/backslashxx/mountify), [meta magicmount](https://github.com/7a72/meta-magic_mount/), [meta magicmount rs](https://github.com/Tools-cx-app/meta-magic_mount/), [hybrid mount](https://github.com/YuzakiKokuban/meta-hybrid_mount)等。若你是第一次使用KSU或刚从旧版KSU管理器升级至新版，请先安装一个元模块，这样其他涉及系统挂载的模块才能正常运行；
-          6. KernelPatch Next（即KPN）是一个独立于KSU的KPM实现，可以运行在任意KSU/面具环境中（不适用于Apatch），且不能与(Re)SukiSU内置的kpm功能共同使用，使用前请保证你的内核没有内置的kpm实现/修补。
+          6. KPM 补丁已根据 KSU 分支自动选择合适方式集成。
           
           #### ※※※刷写内核有风险，为防止出现意外导致手机变砖，在刷入内核前请务必用[KernelFlasher](https://github.com/capntrips/KernelFlasher)等软件备份boot等关键启动分区!※※※
           EOF
