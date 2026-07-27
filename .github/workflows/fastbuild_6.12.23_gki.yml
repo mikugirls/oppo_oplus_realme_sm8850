@@ -5,7 +5,7 @@ env:
   ANDROID_VERSION: 'android16'
   KERNEL_VERSION: '6.12'
   SUB_VERSION: '23_gki'
-  KERNEL_NAME: 'android16-5-ga8f88ad96df3-ab13929693-4k'
+  KERNEL_NAME: 'android16-5-g75e9b1c7ae7c-abogki463945075-4k'
   CCACHE_KEY: ccache-ecsv4-gki-6.12.23
 
 on:
@@ -28,7 +28,7 @@ on:
         type: boolean
         default: 'true'
       kpm_enable:
-        description: '是否开启kpm(使用KpatchNext独立实现kpm(支持任意KSU/面具环境); 不需要可保持默认关闭)'
+        description: '是否开启kpm'
         required: true
         type: boolean
         default: 'false'
@@ -52,10 +52,10 @@ on:
           - 'true'
           - 'default'
       droidspaces_enable:
-        description: '是否启用Droidspaces容器支持(轻量化的完整Linux容器支持;false关闭,standard开启容器+ntsync支持,extend开启更多测试支持项)'
+        description: '是否启用Droidspaces容器支持(轻量化的完整Linux容器支持;false关闭,standard开启容器,extend开启更多测试支持项)'
         required: true
         type: choice
-        default: 'false'
+        default: 'standard'
         options:
           - 'false'
           - 'standard'
@@ -64,7 +64,7 @@ on:
         description: '是否开启网络功能拓展配置(用于为ipset及需要iptables等高级网络功能内核支持的程序提供支持)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       adios_enable:
         description: '是否启用ADIOS IO调度器支持(提升IO读写性能)'
         required: true
@@ -84,7 +84,7 @@ on:
         description: '更新ccache缓存(将本次编译生成的ccache缓存覆盖至仓库缓存，在更改编译配置、源码或需要刷新缓存时开启)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       ccache_debug:
         description: '是否上传 Ccache调试日志(用于调试, 无需要不必开启)'
         required: true
@@ -104,7 +104,7 @@ jobs:
       ak3name: ${{ steps.create_zip.outputs.ak3name }}
     permissions:
       actions: write
-      contents: read
+      contents: write
     steps:
       - name: 安装环境依赖+初始化源码仓库及llvm-clang19工具链
         run: |
@@ -130,7 +130,7 @@ jobs:
           rm -f ./ccache &
           
           echo "正在克隆源码仓库..."
-          aria2c -s16 -x16 -k1M https://github.com/cctv18/android_gki_kernel_common/archive/refs/heads/android16-6.12-2025-06.zip -o common.zip && 
+          aria2c -s16 -x16 -k1M https://github.com/mikugirls/android_gki_kernel_common/archive/refs/heads/android16-6.12-2025-06.zip -o common.zip && 
           unzip -q common.zip && 
           mv "android_gki_kernel_common-android16-6.12-2025-06" common &&
           rm -rf common.zip &
@@ -257,12 +257,21 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "resukisu" ]]; then
             echo "正在配置ReSukiSU（由于SukiSU长期未维护无法正常编译，且ReSukiSU兼容sukisu管理器，故SukiSU源码仓库已重定向为resukisu）..."
-            curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
-            echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@cctv18"' >> ./common/arch/arm64/configs/gki_defconfig
+            curl -LSs "https://raw.githubusercontent.com/mikugirls/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%"' >> ./common/arch/arm64/configs/gki_defconfig
             cd ./KernelSU
-            # 生成自定义版本号（基于提交计数）, 失败时使用 114514
-            KSU_VERSION=$(expr $(git rev-list --count main) + 30700 2>/dev/null || echo 114514)
-            # 存储版本号到 GitHub 环境变量
+            # 使用 GitHub API 获取原版 ReSukiSU 仓库 main 分支的 commit 总数
+            LINK_HEADER=$(curl -s -I "https://api.github.com/repos/ReSukiSU/ReSukiSU/commits?sha=main&per_page=1" | grep -i "^link:")
+            if [ -n "$LINK_HEADER" ]; then
+                # 从 Link 头提取 rel="last" 的 page 参数
+                KSU_REMOTE_COUNT=$(echo "$LINK_HEADER" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p')
+            fi
+            # 若获取失败，降级使用本地仓库的 commit 数
+            if [ -z "$KSU_REMOTE_COUNT" ]; then
+                echo "⚠️ API 获取失败，使用本地仓库 commit 计数作为降级"
+                KSU_REMOTE_COUNT=$(git rev-list --count HEAD)
+            fi
+            KSU_VERSION=$(expr 30000 + $KSU_REMOTE_COUNT + 700)
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksunext" ]]; then
@@ -386,6 +395,11 @@ jobs:
           # 6.12内核Rust配置
           echo "CONFIG_RUST=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ANDROID_BINDER_IPC_RUST=m" >> ./common/arch/arm64/configs/gki_defconfig
+          # 如果启用了 KPM 且 KSU 类型为 SukiSU/ReSukiSU，添加 CONFIG_KPM=y
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "true" && ( "${{ github.event.inputs.ksu_type }}" == "resukisu" || "${{ github.event.inputs.ksu_type }}" == "sukisu" ) ]]; then
+            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+
           # 应用 CVE_2026_43499 修复补丁
           cd common
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/cve-2026-43499-rtmutex-6.12.patch
@@ -473,18 +487,13 @@ jobs:
             # 应用 Droidspaces 容器必须补丁
             wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/fix_sysvipc_kabi_a16-6.12.patch
             patch -p1 -F 3 < fix_sysvipc_kabi_a16-6.12.patch || true
-            # 修补 oplus_bsp_midas 行为，避免开机崩溃
-            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/fix_oplus_bsp_midas.patch
-            patch -p1 -F 3 < fix_oplus_bsp_midas.patch || true
-            # 修补 oplus_bsp_sched_assist 数组越界访问导致的运行随机崩溃
-            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/ddl_hit_hook.patch
-            patch -p1 -F 3 < ddl_hit_hook.patch || true
-            # 应用 NTSync 补丁
-            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/ntsync_compat_${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
-            patch -p1 -F 3 < ntsync_compat_${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
+            # 应用二合一补丁，同时修复：oplus_bsp_midas 开机崩溃（PID namespace 匹配问题）和 oplus_bsp_sched_assist 随机重启（ddl_sdata 数组越界），该补丁已包含原 ddl_hit_hook.patch 的所有修复，无需再单独打后者
+            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/oplus_bsp_pid_namespace_fix.patch
+            patch -p1 -F 3 < oplus_bsp_pid_namespace_fix.patch || true
             # 开启 Droidspaces 容器所需内核支持
             echo "CONFIG_PID_NS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_IPC_NS=y" >> ./arch/arm64/configs/gki_defconfig
+            # 添加用户命名空间支持
             echo "CONFIG_USER_NS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_SYSVIPC=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_DEVTMPFS=y" >> ./arch/arm64/configs/gki_defconfig
@@ -499,8 +508,6 @@ jobs:
             #echo "CONFIG_FW_LOADER_COMPRESS=y" >> ./arch/arm64/configs/gki_defconfig
             #echo "CONFIG_BRIDGE_NETFILTER=y" >> ./arch/arm64/configs/gki_defconfig
             #echo "CONFIG_NF_TABLES=y" >> ./arch/arm64/configs/gki_defconfig
-            # 开启 NTSync
-            echo "CONFIG_NTSYNC=y" >> ./arch/arm64/configs/gki_defconfig
             if [[ "${{ github.event.inputs.droidspaces_enable }}" == "extend" ]]; then
               echo "正在启用容器环境扩展支持..."
               # 开启虚拟 HCI 设备支持
@@ -537,7 +544,7 @@ jobs:
           cd kernel_workspace
           echo "CONFIG_BBG=y" >> ./common/arch/arm64/configs/gki_defconfig
           cd ./common
-          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          curl -sSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
       - name: 添加制作名称
@@ -549,7 +556,7 @@ jobs:
             for f in ./common/scripts/setlocalversion; do
               sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
             done
-            sudo sed -i 's/-4k/-${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+            sudo sed -i 's/-4k/-${{ github.event.inputs.kernel_suffix }}/g' ./common/arch/arm64/configs/gki_defconfig
           else
             echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
             for f in ./common/scripts/setlocalversion; do
@@ -559,7 +566,7 @@ jobs:
           fi
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
           echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
-           
+
       - name: 构建内核
         run: |
           WORKDIR="$(pwd)"
@@ -697,10 +704,27 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ env.CCACHE_REAL_KEY }}-${{ runner.os }}-${{ github.ref_name }}
          
-      - name: 应用KPM并修补内核
-        if: inputs.kpm_enable
+      # ---------- KPM 后处理分支（根据 ksu_type 选择） ----------
+      # 1. 当 ksu_type 为 resukisu 或 sukisu 时，使用 SukiSU 的 patch_linux 工具
+      - name: 应用 KPM 补丁（SukiSU 方式）
+        if: inputs.kpm_enable && (github.event.inputs.ksu_type == 'resukisu' || github.event.inputs.ksu_type == 'sukisu')
         run: |
-          echo "正在应用KP-N并修补内核..."
+          echo "正在应用 SukiSU KPM 补丁..."
+          cd kernel_workspace/common/out/arch/arm64/boot
+          # 下载 SukiSU 提供的 patch_linux 脚本
+          wget https://github.com/SukiSU-Ultra/SukiSU_patch/raw/refs/heads/main/kpm/patch_linux -O patch
+          chmod +x ./patch
+          # 执行修补
+          ./patch
+          rm -f Image
+          mv oImage Image
+          echo "SukiSU KPM 补丁应用完成。"
+
+      # 2. 当 ksu_type 为 ksunext 或 ksu 时，使用 KPatch-Next 的 kptools 工具（原 KPN 方式）
+      - name: 应用KPM并修补内核（KPN方式）
+        if: inputs.kpm_enable && (github.event.inputs.ksu_type == 'ksunext' || github.event.inputs.ksu_type == 'ksu')
+        run: |
+          echo "正在应用 KPatch-Next (KPN) 修补内核..."
           cd kernel_workspace/common/out/arch/arm64/boot
           wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kptools-linux
           wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kpimg-linux
@@ -708,7 +732,8 @@ jobs:
           ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
           rm -f Image
           mv oImage Image
-          
+          echo "KPN 补丁应用完成。"
+
       - name: 克隆 AnyKernel3 并打包
         id: create_zip
         run: |
@@ -735,7 +760,8 @@ jobs:
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
             wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
           fi
-          if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
+          # 仅在 KPN 模式下（ksunext 或 ksu）下载 kpn.zip，供用户使用
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "true" && ( "${{ github.event.inputs.ksu_type }}" == "ksunext" || "${{ github.event.inputs.ksu_type }}" == "ksu" ) ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
           fi
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
@@ -789,21 +815,40 @@ jobs:
           path: ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip
           archive: false
 
-  release:
+  get-manager:
     needs: build
+    permissions:
+      actions: write
+      contents: write
+    uses: ./.github/workflows/getmanager.yml
+    with:
+      kernelsu_variant: ${{ github.event.inputs.ksu_type }}
+    secrets: inherit
+
+  release:
+    needs: [build, get-manager]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
-      actions: read
-      
+      actions: write
+
     steps:
-      - name: 下载 ZIP 工件
+      - name: 下载内核 ZIP（保持压缩包）
         uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.ak3name }}
           path: ./release_zips
           skip-decompress: true
+
+      - name: 下载管理器 APK（保持压缩包）
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: ${{ needs.get-manager.outputs.ksuVer != '0' && format('{0}-Manager({1})', github.event.inputs.ksu_type == 'resukisu' && 'ReSukiSU' || github.event.inputs.ksu_type == 'sukisu' && 'SukiSU' || github.event.inputs.ksu_type == 'ksunext' && 'Next' || github.event.inputs.ksu_type == 'ksu' && 'Official' || 'none', needs.get-manager.outputs.ksuVer) || '' }}
+          path: ./manager_apk
+          skip-decompress: true
+        if: needs.get-manager.outputs.ksuVer != '0'
 
       - name: 设置环境变量
         run: |
@@ -836,7 +881,7 @@ jobs:
             KSU_TYPENAME="无内置KSU"
           fi
           echo "KSU_TYPENAME=$KSU_TYPENAME" >> $GITHUB_ENV
-         
+
       - name: 创建发布
         id: create_release
         env:
@@ -858,13 +903,12 @@ jobs:
           - ADIOS IO调度器支持：${{ github.event.inputs.adios_enable }}
           - Re-Kernel支持：${{ github.event.inputs.rekernel_enable }}
           - 内核级基带保护支持：${{ github.event.inputs.baseband_guard }}
-          - ReSukiSU管理器下载：[ReSukiSU_CI](https://github.com/cctv18/ReSukiSU_CI/releases)
-          - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
-          - KernelSU Next管理器下载：[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
-          - KSU原版管理器下载：[KernelSU](https://github.com/tiann/KernelSU/releases)
+          - 管理器版本：${{ needs.get-manager.outputs.ksuVer }}
           
           ### ⏫️ 更新内容：
           - 更新${{ env.KSU_TYPENAME }}至最新版本（${{ needs.build.outputs.ksuver }}）
+          - KPM 根据 KSU 分支自动选择 SukiSU 或 KPN 后处理方式
+          - 默认开启Ntsync并修复权限
           - (预留)
           
           ### 📋 安装方法 | Installation Guide
@@ -873,13 +917,22 @@ jobs:
           3. 若你之前已刷入SukiSU Ultra内核，且SukiSU Ultra管理器已更新至最新版本，可在SukiSU Ultra管理器中直接刷入AnyKernel刷机包并重启；
           4. 刷入无lz4kd补丁版的内核前若刷入过lz4kd补丁版的内核，为避免出错，请先关闭zram模块；
           5. 由于KernelSU上游更新了元模块功能，最新版KSU管理器（包括除KernelSU Next以外的各分支）需要配合元模块(metamodule)才能正常挂载模块。目前的元模块包括[meta overlayfs](https://github.com/KernelSU-Modules-Repo/meta-overlayfs), [mountify](https://github.com/backslashxx/mountify), [meta magicmount](https://github.com/7a72/meta-magic_mount/), [meta magicmount rs](https://github.com/Tools-cx-app/meta-magic_mount/), [hybrid mount](https://github.com/YuzakiKokuban/meta-hybrid_mount)等。若你是第一次使用KSU或刚从旧版KSU管理器升级至新版，请先安装一个元模块，这样其他涉及系统挂载的模块才能正常运行；
-          6. KernelPatch Next（即KPN）是一个独立于KSU的KPM实现，可以运行在任意KSU/面具环境中（不适用于Apatch），且不能与(Re)SukiSU内置的kpm功能共同使用，使用前请保证你的内核没有内置的kpm实现/修补。
+          6. KPM 补丁已根据 KSU 分支自动选择合适方式集成。
           
           #### ※※※刷写内核有风险，为防止出现意外导致手机变砖，在刷入内核前请务必用[KernelFlasher](https://github.com/capntrips/KernelFlasher)等软件备份boot等关键启动分区!※※※
           EOF
+
+          # 构建上传文件列表（使用数组，避免通配符无匹配时报错）
+          FILES=()
+          if compgen -G "release_zips/AnyKernel3_*.zip" > /dev/null; then
+            FILES+=(release_zips/AnyKernel3_*.zip)
+          fi
+          if [ -d "./manager_apk" ] && [ -n "$(ls -A ./manager_apk 2>/dev/null)" ]; then
+            FILES+=(manager_apk/*)
+          fi
 
           gh release create "${{ env.TAG_HEAD }}-${{ env.TIME }}" \
             --repo "${{ github.repository }}" \
             --title "${{ env.TAG_HEAD }}-${{ env.FULL_VERSION }}" \
             --notes-file release_notes.md \
-            release_zips/AnyKernel3_*.zip
+            "${FILES[@]}"
