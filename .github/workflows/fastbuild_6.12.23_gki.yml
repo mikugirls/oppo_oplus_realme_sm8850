@@ -80,6 +80,11 @@ on:
         required: true
         type: boolean
         default: 'true'
+      enable_nomount:
+        description: '是否启用 NoMount (dev 分支)'
+        required: true
+        type: boolean
+        default: 'true'
       ccache_update:
         description: '更新ccache缓存(将本次编译生成的ccache缓存覆盖至仓库缓存，在更改编译配置、源码或需要刷新缓存时开启)'
         required: true
@@ -479,6 +484,19 @@ jobs:
             fi
           fi
 
+      - name: 集成 NoMount (dev 分支)
+        if: inputs.enable_nomount
+        working-directory: ${{ github.workspace }}/kernel_workspace/common
+        run: |
+          echo "下载 NoMount setup.sh (dev)..."
+          curl -sS https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh -o /tmp/setup.sh
+          chmod +x /tmp/setup.sh
+          echo "执行 setup.sh dev（自动修改 Kconfig/Makefile）..."
+          bash /tmp/setup.sh dev
+          echo "启用 CONFIG_NOMOUNT..."
+          echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "NoMount 集成完成"
+
       - name: 启用 Droidspaces 容器支持
         run: |
           if [[ "${{ github.event.inputs.droidspaces_enable }}" != "false" ]]; then
@@ -800,6 +818,7 @@ jobs:
           echo "ADIOS: ${{ github.event.inputs.adios_enable }}" >> ./ak3.log
           echo "Re-Kernel: ${{ github.event.inputs.rekernel_enable }}" >> ./ak3.log
           echo "BBG: ${{ github.event.inputs.baseband_guard }}" >> ./ak3.log
+          echo "NoMount: ${{ github.event.inputs.enable_nomount }}" >> ./ak3.log
           zip -z ../$AK3_NAME < ./ak3.log
 
       - name: 上传 Ccache 调试日志
@@ -849,6 +868,14 @@ jobs:
           path: ./manager_apk
           skip-decompress: true
         if: needs.get-manager.outputs.ksuVer != '0'
+
+      - name: 下载 NoMount 模块
+        if: needs.get-manager.outputs.nomount_artifact_name != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.get-manager.outputs.nomount_artifact_name }}
+          path: ./nomount_module
+          skip-decompress: true
 
       - name: 设置环境变量
         run: |
@@ -903,6 +930,7 @@ jobs:
           - ADIOS IO调度器支持：${{ github.event.inputs.adios_enable }}
           - Re-Kernel支持：${{ github.event.inputs.rekernel_enable }}
           - 内核级基带保护支持：${{ github.event.inputs.baseband_guard }}
+          - NoMount 支持：${{ github.event.inputs.enable_nomount }}
           - 管理器版本：${{ needs.get-manager.outputs.ksuVer }}
           
           ### ⏫️ 更新内容：
@@ -929,6 +957,10 @@ jobs:
           fi
           if [ -d "./manager_apk" ] && [ -n "$(ls -A ./manager_apk 2>/dev/null)" ]; then
             FILES+=(manager_apk/*)
+          fi
+          # 添加 NoMount 模块（如果存在）
+          if [ -d "./nomount_module" ] && [ -n "$(ls -A ./nomount_module 2>/dev/null)" ]; then
+            FILES+=(nomount_module/*)
           fi
 
           gh release create "${{ env.TAG_HEAD }}-${{ env.TIME }}" \
