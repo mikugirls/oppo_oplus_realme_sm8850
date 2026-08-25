@@ -328,6 +328,14 @@ jobs:
             cd ./KernelSU
             patch -p1 < 10_enable_susfs_for_ksu.patch || true
           fi
+
+      - name: 修复 fs/open.c 中 getname_flags 参数错误
+        run: |
+          cd kernel_workspace/common
+          if grep -q 'getname_flags(filename, lookup_flags, NULL)' fs/open.c; then
+            echo "修复 getname_flags 调用..."
+            sed -i 's/getname_flags(filename, lookup_flags, NULL)/getname_flags(filename, lookup_flags)/' fs/open.c
+          fi
           
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         if: inputs.lz4_enable
