@@ -310,7 +310,7 @@ jobs:
     outputs:
       artifact_name: ${{ steps.download.outputs.artifact_name }}
     steps:
-      - name: 获取 NoMount 模块（dev 分支）
+      - name: 获取 NoMount 模块（master 分支）
         id: download
         continue-on-error: true
         env:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           REPO="maxsteeel/nomount"
           WORKFLOW="build.yml"
-          BRANCH="dev"
+          BRANCH="master"
 
           RUN_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW/runs?branch=$BRANCH&status=success&per_page=1" \

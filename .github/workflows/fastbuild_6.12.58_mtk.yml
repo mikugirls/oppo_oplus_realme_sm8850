@@ -81,7 +81,7 @@ on:
         type: boolean
         default: 'true'
       enable_nomount:
-        description: '是否启用 NoMount (dev 分支)'
+        description: '是否启用 NoMount (master 分支)'
         required: true
         type: boolean
         default: 'true'
@@ -484,15 +484,15 @@ jobs:
             fi
           fi
 
-      - name: 集成 NoMount (dev 分支)
+      - name: 集成 NoMount (master 分支)
         if: inputs.enable_nomount
         working-directory: ${{ github.workspace }}/kernel_workspace/common
         run: |
-          echo "下载 NoMount setup.sh (dev)..."
-          curl -sS https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh -o /tmp/setup.sh
+          echo "下载 NoMount setup.sh ..."
+          curl -sS https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/master/kernel/setup.sh -o /tmp/setup.sh
           chmod +x /tmp/setup.sh
-          echo "执行 setup.sh dev（自动修改 Kconfig/Makefile）..."
-          bash /tmp/setup.sh dev
+          echo "执行 setup.sh（自动修改 Kconfig/Makefile）..."
+          bash /tmp/setup.sh master
           echo "启用 CONFIG_NOMOUNT..."
           echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "NoMount 集成完成"
